@@ -16,11 +16,27 @@
 
 ---
 
-## 0. 三条路径，先选一条
+## 0. 最短路径（已经配好过、只想再建一次图）
+
+```bash
+# 终端 A（PC）    起授时，常驻
+cd ~/FLMap.3 && ./scripts/clock_sync.sh start
+
+# 终端 B（狗端）  进控制台，看到 10 Hz 后敲 start
+ssh unitree@192.168.123.18 && cd ~/flmap3_ws && ./scripts/edge_control.sh
+#   flmap> start
+
+# 终端 C（PC）    出图
+cd ~/FLMap.3 && ./scripts/pc_view.sh
+```
+
+收工：终端 B `stop` → `quit`，终端 C `Ctrl-C`。
+
+## 0.1 三条路径，先选一条
 
 | 我要做什么 | 走哪节 | 耗时 |
 |---|---|---|
-| 今天只是要建一次图 | §3 每次实验 SOP | 3 分钟 |
+| 今天只是要建一次图 | 上面这段 / §3 | 3 分钟 |
 | 换了新 PC / 重装了系统 / 第一次跑 | §2 一次性配置 → §3 | 20–30 分钟 |
 | 已经有问题（连不上 / 画面空 / 形状怪） | §6 症状速查 | — |
 
@@ -51,8 +67,9 @@ cd ~/FLMap.3 && ./scripts/link_probe.sh
 
 1. 交换机通电。
 2. 插好三根网线（PC、拓展坞、雷达）。
-3. 狗上电（电池开机）。雷达由狗端 M8 航插供电，所以雷达是**跟着狗一起醒**的。
-   等 40–60 秒，听到风扇稳定、拓展坞灯常亮。
+3. 狗上电（电池开机），等 40–60 秒。
+   - 宇树套装（M8 复合线）：雷达由这根线供电，**跟着狗一起醒**，不用单独上电。
+   - 零售版（M12 + XT30 裸线）：雷达电源独立，记得**先把 12 V 接上**再指望 ping 通。
 4. PC 上 `ping` 三个地址。
 
 ```bash
@@ -105,7 +122,8 @@ cd ~/FLMap.3
 ./scripts/clock_sync.sh install   # 推到狗端装 systemd 定时器（要狗端 sudo 密码）
 ```
 
-装完之后，狗端每 30 秒自动校一次，**以后每次开机都不用再管**（只要 PC 的授时服务在跑）。
+装完之后，**狗端**每 30 秒自动校一次，以后开机不用管。但 **PC 端的授时服务不会开机自启**，
+所以每次实验还是要在终端 A 跑一次 `clock_sync.sh start`（见 §3）。
 
 验证：
 
@@ -173,7 +191,10 @@ flmap_bridge: /cloud_registered -> /flmap/cloud | voxel 0.10 m | <= 10.0 Hz (tol
               | <= 60000 pts | range 0.5-40.0 m | qos reliable->reliable
 ```
 
-如果 `/cloud_registered 暂无数据`，先别 `start`，看 §6.2。
+如果 `/cloud_registered` 那行显示 **“统计还没出（LIO 刚起）”**，属正常：话题刚建、`hz`
+还没攒够样本。等 10 秒在 `flmap>` 里敲 `status` 再看，出现 `average rate: 10.x` 即可。
+
+只有显示 **“驱动未连上雷达”** 时才需要处理，看 §6.2。
 
 > **驱动和建图一进控制台就在跑**，`start` 只是"开始录包 + 建任务目录"。
 
@@ -252,14 +273,22 @@ PC 端：终端 C `Ctrl-C` 结束 `pc_view.sh`。
 拷回 PC（千兆，几十 MB 一两秒）：
 
 ```bash
-scp -r unitree@192.168.123.18:~/bags/2026-10-19_14-30-00 ~/bags/
+scp -r unitree@192.168.123.18:~/bags/2026-10-19_14-30-00 ~/bags/   # 换成实际目录名
 ```
 
 ---
 
 ## 5. 实时体检：什么数值算正常
 
-任何时候怀疑"跑歪了"，按这个顺序看，一级一级往下排：
+任何时候怀疑"跑歪了"，按这个顺序看，一级一级往下排。
+
+先加载环境 —— **只有手动敲下面这些命令才需要**，`scripts/` 里的脚本内部已经配好了：
+
+```bash
+source /opt/ros/humble/setup.bash
+export PATH="/usr/bin:$PATH"        # 有 conda/pyenv 时，保证 python3 带 rclpy/numpy
+export ROS_DOMAIN_ID=42 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_LOCALHOST_ONLY=0
+```
 
 ```bash
 # ① 链路：脚本一次跑完 6 节（网络/时延/SSH/DDS/点云/带宽）
@@ -322,7 +351,7 @@ tail -30 /tmp/flmap_edge/mapping.log     # 找 "Raw feature num"
 ### 6.3 有数据，但 RViz 一片空白
 
 ```bash
-./scripts/link_probe.sh          # 先看第 3、4 层（DDS）
+./scripts/link_probe.sh          # 先看第 4 节（DDS 发现）和第 5 节（点云流）
 ```
 
 - 第 4 节（DDS 发现）就红 → 两边 `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION` 不一致。
@@ -330,6 +359,7 @@ tail -30 /tmp/flmap_edge/mapping.log     # 找 "Raw feature num"
 - 第 5 节（点云流）红但第 4 节正常 → CycloneDDS 可能绑错网卡（多网卡机器常见）：
 
 ```bash
+# 先按 §5 加载环境
 ros2 daemon stop; ROS_LOCALHOST_ONLY=0 ros2 topic list | grep flmap
 ```
 
@@ -346,7 +376,8 @@ python3 tools/diag/cloud_stat.py -t /flmap/cloud -n 1
 
 判定：
 
-- `=1.0` 的元素占比 > 5% → **点云串位**，跑回归测试确认：
+- `x/y/z` 任一项的 `=1.0` 占比 > 5% → **点云串位**，跑回归测试确认
+  （强度列的 `=1.0` 是真实反射值，不算）。
 
 ```bash
 ./tools/diag/run_bridge_selftest.sh -n 5000     # 期望 5000/5000
@@ -359,7 +390,8 @@ python3 tools/diag/cloud_stat.py -t /flmap/cloud -n 1
 
 ```bash
 # 狗端本机频率 vs PC 端频率，两个数一比就知道丢在哪
-ssh unitree@192.168.123.18 'source ~/flmap3_ws/install/setup.bash && ros2 topic hz /flmap/cloud'
+ssh unitree@192.168.123.18 'export ROS_DOMAIN_ID=42 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; \
+  source ~/flmap3_ws/install/setup.bash; ros2 topic hz /flmap/cloud'
 ros2 topic hz /flmap/cloud
 ```
 
@@ -375,14 +407,23 @@ ros2 topic hz /flmap/cloud
 
 ```bash
 ./scripts/pc_view.sh --headless          # 只收数据
-python3 tools/render_cloud.py -t /flmap/map -o /tmp/map.png --view both
+python3 tools/render_cloud.py -t /flmap/map -o /tmp/map.png --view both   # 先按 §5 加载环境
 ```
 
 ---
 
 ## 7. 调参速查
 
-改 `src/flmap_bridge/config/bridge_default.yaml`（狗端），改完重新部署该包再重启控制台。
+改 `src/flmap_bridge/config/bridge_default.yaml`。狗端是 `--symlink-install` 编译的，
+**只改 yaml 不用重编译**：
+
+```bash
+scp src/flmap_bridge/config/bridge_default.yaml \
+    unitree@192.168.123.18:~/flmap3_ws/src/flmap_bridge/config/
+```
+
+然后在狗端控制台 `quit` 再重进。改了 C++ 代码才需要
+`./scripts/deploy_edge.sh --no-patch`。
 
 | 我想要 | 改什么 | 代价 |
 |---|---|---|
@@ -426,6 +467,7 @@ cd ~/FLMap.3 && ./scripts/pc_view.sh
 # 终端 C：Ctrl-C
 
 # ---------- 出问题 ----------
+# 先按 §5 的前三行加载 ROS 环境
 cd ~/FLMap.3 && ./scripts/link_probe.sh
 python3 tools/diag/cloud_stat.py -t /flmap/cloud -n 1
 ./tools/diag/run_bridge_selftest.sh -n 5000

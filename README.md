@@ -228,9 +228,8 @@ The room sits ~45° to `camera_init` — that is the lidar mounting yaw, not dri
 | [07-gap-fix.md](docs/07-gap-fix.md) | point cloud divergence from stream gaps | cloud suddenly flies away |
 | [08-hardware.md](docs/08-hardware.md) | Mid360 wiring, IP config, mounting | installing the lidar |
 | [09-time-sync.md](docs/09-time-sync.md) | why sync matters, how it works, accuracy | **drifting map / frozen RViz** |
-| [10-pitfalls.md](docs/10-pitfalls.md) | how a "correct header, corrupt payload" cloud bug was tracked down | cloud looks wrong |
+| [10-pitfalls.md](docs/10-pitfalls.md) | "data arrives but the geometry is wrong": how a "correct header, corrupt payload" bug was tracked down, plus diagnostics | **map shape looks wrong** |
 | [11-runbook.md](docs/11-runbook.md) | **local runbook**: cabling → power-up → three-terminal SOP → shutdown, with checkpoints | **print this one** |
-| [10-pitfalls.md](docs/10-pitfalls.md) | "data arrives but geometry is wrong" + diagnostics | **map shape looks wrong** |
 
 ## Known limitations
 

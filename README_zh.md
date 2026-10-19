@@ -261,9 +261,8 @@ in 15921 pts -> out 8982 pts (56.4%), ~144 kB/msg, ~11.5 Mbit/s @10.0 Hz
 | [07-gap-fix.md](docs/07-gap-fix.md) | 数据断流导致的点云发散修复 | 点云突然飞走 |
 | [08-hardware.md](docs/08-hardware.md) | Mid360 接线、IP 配置、安装姿态 | 装雷达时 |
 | [09-time-sync.md](docs/09-time-sync.md) | 为什么必须同步、怎么同步、精度多少 | **建图飘 / RViz 定住时** |
-| [10-pitfalls.md](docs/10-pitfalls.md) | 一个"元数据全对、数据全错"的点云 bug 的完整排查过程 | 怀疑点云形状不对时 |
+| [10-pitfalls.md](docs/10-pitfalls.md) | 点云"有数据但几何是错的"：一个"元数据全对、数据全错"的 bug 的完整排查过程 + 诊断工具 | **地图形状不对时必看** |
 | [11-runbook.md](docs/11-runbook.md) | **本地操作手册**：接线 → 上电 → 三终端 SOP → 收工，每步带检查点 | **每次实验前打印这一篇** |
-| [10-pitfalls.md](docs/10-pitfalls.md) | 点云"有数据但几何是错的"两类故障 + 诊断工具 | **地图形状不对时必看** |
 
 ## 七、兼容性与已知限制
 

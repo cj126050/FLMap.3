@@ -88,13 +88,20 @@ start_nodes() {
     BRG_PID=$!
     sleep 2
 
-    # 自检：雷达帧率是判断"到底有没有在出图"的唯一硬指标
+    # 自检：雷达帧率是判断"到底有没有在出图"的唯一硬指标。
+    # 但 LIO 刚启动时话题还没开始计数，`topic hz` 常常 6 秒内拿不到平均值 ——
+    # 这时候报"暂无数据"会让人以为坏了。所以拿驱动日志兜底区分
+    # "还没收敛（正常）" 和 "根本没连上雷达（要处理）"。
     local hz
     hz=$(timeout 6 ros2 topic hz /cloud_registered 2>/dev/null | grep -m1 "average rate" || true)
     if [ -n "$hz" ]; then
         log "${G}  /cloud_registered: $hz${N}"
+    elif grep -q "successfully set lidar attitude" "$LOG_DIR/driver.log" 2>/dev/null; then
+        log "${Y}  /cloud_registered 统计还没出（LIO 刚起，通常 10 秒内就正常）${N}"
+        log "  驱动已连上雷达；用 status 再看一次"
     else
-        log "${Y}  /cloud_registered 暂无数据 —— 检查雷达供电/网口/IP${N}"
+        log "${R}  /cloud_registered 无数据，且驱动未连上雷达${N}"
+        log "  查雷达供电 / M8 航插 / IP 是否为 192.168.123.221（见 docs/08）"
     fi
     log "  日志: $LOG_DIR/{driver,mapping,bridge}.log"
 }
@@ -210,8 +217,10 @@ do_link() {
     local found=0
     for d in /sys/class/net/*; do
         local n; n=$(basename "$d")
-        case "$n" in lo|wl*|docker*|veth*) continue ;; esac
-        [ -e "$d/carrier" ] || continue
+        case "$n" in lo|wl*|docker*|veth*|dummy*|br-*|can*|usb*) continue ;; esac
+        # 只保留有物理 device 的网口；dummy0 / docker0 不会有这个链接。
+        # 注意不要用 carrier==1 过滤 —— 网线掉了 carrier=0 恰恰是最该看到的信息。
+        [ -e "$d/device" ] || continue
         found=1
         local carrier speed addr
         carrier=$(cat "$d/carrier" 2>/dev/null)
@@ -226,6 +235,8 @@ do_link() {
     local pout
     if pout=$(ping -c 20 -i 0.2 -q "$PC_IP" 2>/dev/null); then
         echo "$pout" | tail -2 | sed 's/^/  /'
+        echo "  看丢包率为准：Orin 在跑 LIO 时 ping 的 RTT 会被调度放大到 10 ms 级，"
+        echo "  链路真值以 PC 端 ./scripts/link_probe.sh 为准（约 0.4 ms）"
     else
         echo -e "  ${R}ping 不通${N} —— 交换机/网线/PC 有线口地址，三选一有问题"
         echo "  期望: 0% packet loss, rtt avg < 1 ms（千兆直连约 0.5 ms）"

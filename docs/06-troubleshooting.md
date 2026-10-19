@@ -21,6 +21,7 @@
 | 搜不到机器狗热点 / App 连不上 | [§10](#10-搜不到机器狗热点--app-连不上) |
 | 扫描输出看不懂，怕是隐藏网络 | [§10.1](#101-扫描结果怎么读避免误判成隐藏网络) |
 | 改过 SSID 后热点彻底消失 | [§10.2](#102-情况③改过-ssid-后再也搜不到) |
+| **有数据、有频率，但点云形状不对** | [§11](#11-有数据有频率但点云形状不对) → [10-pitfalls](10-pitfalls.md) |
 
 ---
 
@@ -320,7 +321,29 @@ ros2 topic hz /flmap/cloud          # 应约 5 Hz
 
 ---
 
-## 11. 出问题时的信息采集
+## 11. 有数据、有频率，但点云形状不对
+
+**判据**：`ros2 topic hz /flmap/cloud` 正常、RViz 有图、地图点数在涨，但形状像
+"原点附近一小团"或者"一圈细线"，Z 轴范围甚至能到 ±20 m。
+
+**原因**：点云打包串位 —— 分量之间错开若干字节。这类故障**不会**体现在消息头上，
+`point_step` / `row_step` / `len(data)` 全部自洽，所以靠"有没有数据"永远查不出来。
+
+**处置**：
+
+```bash
+# 1. 看数值分布（三轴 min 是否相同、=1.0 是否异常多、intensity 是否有负值）
+python3 tools/diag/cloud_stat.py -t /flmap/cloud -n 2
+
+# 2. 若来源是自己改过的打包代码，跑回归测试
+./tools/diag/run_bridge_selftest.sh -n 5000
+```
+
+**完整原理、诊断过程和修复写法**见 [10-pitfalls.md](10-pitfalls.md)。
+
+---
+
+## 12. 出问题时的信息采集
 
 提 issue 时带上这些，能省掉来回问：
 
@@ -329,6 +352,7 @@ ros2 topic hz /flmap/cloud          # 应约 5 Hz
 ./scripts/link_probe.sh > link.txt 2>&1
 ros2 topic list > topics.txt
 ros2 topic info /flmap/cloud -v > qos.txt
+python3 tools/diag/cloud_stat.py -t /flmap/cloud -n 1 > cloud_stat.txt 2>&1
 uname -a; echo $ROS_DISTRO $ROS_DOMAIN_ID $RMW_IMPLEMENTATION
 
 # 狗端额外

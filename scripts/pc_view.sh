@@ -66,23 +66,36 @@ if ping -c 3 -W 1 "$EDGE_HOST" >/dev/null 2>&1; then
     rtt=$(ping -c 5 -i 0.2 -q "$EDGE_HOST" 2>/dev/null | awk -F'/' '/rtt|round-trip/{print $5}')
     ok "ping 通，平均 RTT ${rtt:-?} ms"
 else
-    warn "ping ${EDGE_HOST} 不通。可视化会是一片空白。排查见 docs/network-and-dds.md："
-    warn "  - 狗和 PC 是否在同一个 Wi-Fi / 同网段？ ip -br addr"
-    warn "  - 狗端 edge_control.sh 是否已在跑？"
+    warn "ping ${EDGE_HOST} 不通。可视化会是一片空白。排查见 docs/02-network-and-dds.md："
+    warn "  - PC 有线口是否配了 192.168.123.10/24？ ip -br addr"
+    warn "  - 狗和 PC 是否挂在同一台交换机上？网线 / 交换机指示灯"
     warn "  - 想继续启动（比如换 EDGE_HOST）按 Ctrl-C 退出"
     sleep 3
 fi
 
-say "等待狗端的 /flmap/cloud（最多 8 秒）…"
-if timeout 8 ros2 topic hz /flmap/cloud 2>/dev/null | grep -q "average rate"; then
-    hz=$(timeout 4 ros2 topic hz /flmap/cloud 2>/dev/null | grep -m1 "average rate" | awk '{print $3}')
-    ok "收到点云，约 ${hz:-?} Hz"
+say "等待狗端的 /flmap/cloud（最多 10 秒）…"
+# 用 `timeout 8 ros2 topic hz | grep -q` 做存在性判断会偶发误报：新建 DDS participant
+# 首次发现端点偶尔要好几秒，超时被杀就当成了"没数据"（实测有过一次明明在发点云却报空）。
+# 换成 `echo --once`：收到一条立刻退出，不用等率统计，也不受发现延迟叠加影响。
+probe_cloud() {
+    local rel="$1"
+    timeout 10 ros2 topic echo /flmap/cloud --once --field width \
+        --qos-reliability "$rel" 2>/dev/null | head -1
+}
+W="$(probe_cloud reliable)"
+[ -z "$W" ] && W="$(probe_cloud best_effort)"
+
+if [ -n "$W" ]; then
+    # 频率用行缓冲量，避免同样的块缓冲问题
+    hz=$(timeout 6 stdbuf -oL ros2 topic hz /flmap/cloud 2>/dev/null \
+         | grep -m1 "average rate" | awk '{print $3}')
+    ok "收到点云，当前帧 ${W} 点，约 ${hz:-?} Hz"
 else
     warn "/flmap/cloud 没数据 —— RViz 会空着。常见原因："
-    warn "  1) 狗端还没 start（控制台里输入 start 才开始录包，但建图/桥接是立刻在跑的）"
+    warn "  1) 狗端 bridge 没起来：ssh 上去看 pgrep -af flmap_bridge_node，或跑 scripts/edge_control.sh status"
     warn "  2) 两边 ROS_DOMAIN_ID 不一致（本脚本用 ${ROS_DOMAIN_ID}）"
     warn "  3) 两边 RMW 不一致（本脚本用 ${RMW_IMPLEMENTATION}）"
-    warn "  4) 防火墙挡了 DDS，跑 ./scripts/link_probe.sh 看详情"
+    warn "  4) 本机网卡选错（多网卡时 CycloneDDS 可能绑到 Wi-Fi 上），跑 ./scripts/link_probe.sh 看详情"
 fi
 
 # ---- 3. 启动 ----

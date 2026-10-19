@@ -5,14 +5,14 @@
 #  和原版 mid360_control.sh 的区别：
 #    1. 不启 RViz —— 可视化在 PC 端做（见 scripts/pc_view.sh）
 #    2. 多起一个 flmap_bridge，把全分辨率点云瘦身后发给 PC
-#    3. 多了 link 命令，现场查无线链路质量
+#    3. 多了 link 命令，现场查有线链路质量（协商速率 + 到 PC 的 RTT）
 #
 #  命令:
 #    start   开始一次新扫描（建任务目录 + 录包）
 #    pause   暂停录包        resume 继续录包
 #    stop    停止录包并导出 PCD
 #    status  进程 / 话题 / 流量状态
-#    link    无线链路体检（RTT、丢包、Wi-Fi 信号）
+#    link    有线链路体检（网口速率、carrier、到 PC 的 RTT）
 #    stats   bridge 输出频率与点数
 #    quit    退出（先 stop，再关节点）
 #
@@ -24,7 +24,7 @@
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="${LOG_DIR:-/tmp/flmap_edge}"
 BAG_DIR="${FLMAP_BAG_DIR:-$HOME/bags}"
-PC_IP="${FLMAP_PC_IP:-}"          # PC 的 IP，用于 link 命令测 RTT
+PC_IP="${FLMAP_PC_IP:-192.168.123.10}"   # PC 有线口地址，用于 link 命令测 RTT
 mkdir -p "$LOG_DIR"
 
 # ---- 环境：自动识别 Foxy（狗）/ Humble（开发机）----
@@ -206,22 +206,38 @@ do_stats() {
 }
 
 do_link() {
-    echo -e "${C}--- 无线链路 ---${N}"
-    ip -br addr show 2>/dev/null | awk '$1!="lo"{printf "  %-12s %s\n", $1, $3}'
-    for w in /sys/class/net/wl*; do
-        [ -e "$w" ] || continue
-        local n; n=$(basename "$w")
-        echo "  $n 信号: $(iw dev "$n" link 2>/dev/null | awk '/signal/{print $2, $3}' || echo '未知')"
-        echo "  $n 速率: $(iw dev "$n" link 2>/dev/null | awk '/bitrate/{print $2, $3}' || echo '未知')"
+    echo -e "${C}--- 有线网口 ---${N}"
+    local found=0
+    for d in /sys/class/net/*; do
+        local n; n=$(basename "$d")
+        case "$n" in lo|wl*|docker*|veth*) continue ;; esac
+        [ -e "$d/carrier" ] || continue
+        found=1
+        local carrier speed addr
+        carrier=$(cat "$d/carrier" 2>/dev/null)
+        speed=$(cat "$d/speed" 2>/dev/null)
+        addr=$(ip -4 -o addr show "$n" 2>/dev/null | awk '{print $4}')
+        printf "  %-8s %-20s carrier=%s  speed=%sMb/s\n" \
+            "$n" "${addr:-无地址}" "${carrier:-?}" "${speed:-?}"
     done
+    [ "$found" = "0" ] && echo "  没有找到有线网口"
 
-    if [ -z "$PC_IP" ]; then
-        echo -e "  ${Y}未设置 FLMAP_PC_IP，跳过 RTT 测试${N}"
-        echo "    export FLMAP_PC_IP=<PC 的 IP> 后再跑 link"
-        return
-    fi
     echo -e "${C}--- 到 PC ($PC_IP) ---${N}"
-    ping -c 20 -i 0.2 -q "$PC_IP" 2>/dev/null | tail -3 | sed 's/^/  /'
+    local pout
+    if pout=$(ping -c 20 -i 0.2 -q "$PC_IP" 2>/dev/null); then
+        echo "$pout" | tail -2 | sed 's/^/  /'
+    else
+        echo -e "  ${R}ping 不通${N} —— 交换机/网线/PC 有线口地址，三选一有问题"
+        echo "  期望: 0% packet loss, rtt avg < 1 ms（千兆直连约 0.5 ms）"
+    fi
+
+    echo -e "${C}--- 到雷达 (192.168.123.221) ---${N}"
+    local lout
+    if lout=$(ping -c 5 -i 0.2 -q 192.168.123.221 2>/dev/null); then
+        echo "$lout" | tail -2 | sed 's/^/  /'
+    else
+        echo -e "  ${R}雷达不通${N} —— 雷达没上电 / IP 不是 .221（见 docs/08）"
+    fi
 }
 
 do_quit() {
@@ -243,7 +259,7 @@ do_help() {
   stop    停止录包 + 导出 PCD
   status  进程/话题/硬件
   stats   bridge 输出频率与压缩比
-  link    无线链路体检
+  link    有线链路体检（网口速率 + 到 PC/雷达的 RTT）
   env     手动跑一次环境体检
   quit    退出（自动 stop + 关节点）
 EOF

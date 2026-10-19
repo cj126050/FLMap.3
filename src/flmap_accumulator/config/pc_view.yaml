@@ -1,0 +1,23 @@
+# flmap_accumulator —— PC 端地图累加参数
+#
+# 这个节点跑在 PC 上，负责把狗端发来的「当前帧」拼成一张越建越大的地图。
+
+/flmap_accumulator:
+  ros__parameters:
+    input_topic: "/flmap/cloud"       # 狗端 flmap_bridge 的输出
+    output_topic: "/flmap/map"        # RViz 显示的累积地图（1 Hz）
+
+    # 累加时的体素尺寸。比狗端的 0.20 略细，这样多帧叠加后还能保留细节，
+    # 但内存会翻倍。内存吃紧（< 8 GB）时可调到 0.25。
+    voxel_leaf: 0.15
+
+    # 多久重发一次完整地图。1 Hz 足够看进度；2 Hz 更顺滑但 PC 端的
+    # 序列化开销翻倍（2 M 点约 32 MB/次）。
+    publish_rate: 1.0
+
+    # 点数硬上限，触顶时做一次全局体素去重再继续。
+    # 2 M 点 ≈ 32 MB 内存，室内单层场景足够。
+    max_points: 2000000
+
+    # 必须和点云消息的 frame_id 一致，RViz 的 Fixed Frame 也用它。
+    frame_id: "camera_init"

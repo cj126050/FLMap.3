@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>flmap_bringup</name>
+  <version>0.1.0</version>
+  <description>
+    Launch files, parameter presets and RViz configuration for the split
+    "edge mapping + remote visualization" architecture.
+  </description>
+  <maintainer email="cj126050@users.noreply.github.com">FLMap.2 contributors</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>flmap_bridge</exec_depend>
+  <exec_depend>flmap_accumulator</exec_depend>
+  <exec_depend>fast_lio2</exec_depend>
+  <exec_depend>livox_ros_driver2</exec_depend>
+  <exec_depend>go2_fastlio</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

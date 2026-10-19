@@ -1,0 +1,46 @@
+# Build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Runtime data (per-scan output)
+bags/
+*.pcd
+*.bag
+
+# ROS
+*.log
+*.db3
+*_0.db3
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# 本机生成的 DDS 配置（含机器 IP，不要提交）
+config/dds_edge.xml
+config/dds_pc.xml
+
+# 开发期临时日志
+.devlog/
+
+# Backup files
+*.bak
+*.bak_*
+*~
+
+# Optional large upstream files (uncomment to exclude from clone)
+# src/FAST_LIO2_ROS2/Supplementary/LIVO2_supplementary.pdf
+
+# 体检/诊断日志（本地产物，不入库）
+logs/

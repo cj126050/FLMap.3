@@ -1,0 +1,77 @@
+# Fast-LIO2 配置 - Unitree Go2 + Livox Mid360
+
+/fastlio2_mapping:
+  ros__parameters:
+    # 实时建图必须 false：实时数据没有 /clock，设 true 会让节点一直等时钟而挂住。
+    # 离线回放录制包时用命令行覆盖：use_sim_time:=true
+    use_sim_time: false
+
+    # ========== 话题配置 ==========
+    common/lid_topic: "/livox/lidar"
+    common/imu_topic: "/livox/imu"
+    common/lidar_en: 1
+    common/ros_driver_bug_fix: true
+
+    # ========== 预处理参数 ==========
+    preprocess/blind: 0.5
+    preprocess/filter_size_surf: 0.15
+    preprocess/point_filter_num: 1
+    preprocess/lidar_type: 1
+    preprocess/scan_line: 6
+    preprocess/feature_extract_enabled: false
+
+    # ========== IMU 噪声（必须用 imu/ 前缀）==========
+    imu/acc_cov: 0.5
+    imu/gyr_cov: 0.3
+    imu/imu_int_frame: 3
+    imu/imu_en: true
+    imu/gravity_est_en: true
+    imu/ba_bg_est_en: true
+
+    # ========== 时间偏移（只用 time_offset/imu_time_offset）==========
+    time_offset/imu_time_offset: 0.0
+    time_offset/img_time_offset: 0.0
+    time_offset/exposure_time_init: 0.0
+
+    # ========== 外参 ==========
+    extrin_calib/extrinsic_T: [-0.061226, 0.007290, 0.078772]
+    extrin_calib/extrinsic_R: [0.999970, -0.006979, 0.003289, 0.006993, 0.999967, -0.004244, -0.003259, 0.004267, 0.999986]
+
+    # ========== LIO 核心参数 ==========
+    lio/max_iterations: 8
+    lio/beam_err: 0.04
+    lio/sigma_num: 3.0
+    lio/min_eigen_value: 0.002
+    lio/voxel_size: 0.3
+    lio/max_layer: 2
+    lio/max_points_num: 60
+
+    # ========== 局部地图 ==========
+    local_map/map_sliding_en: true
+    local_map/half_map_size: 100
+    local_map/sliding_thresh: 8.0
+
+    # ========== VIO / UAV ==========
+    vio/exposure_estimate_en: false
+    uav/imu_rate_odom: false
+    uav/gravity_align_en: true
+
+    # ========== 发布 ==========
+    publish/dense_map_en: true
+    publish/pub_effect_point_en: false
+    publish/pub_scan_num: 1
+    publish/blind_rgb_points: 0.0
+
+    # ========== EVO ==========
+    evo/seq_name: "go2_mid360"
+    evo/pose_output_en: false
+
+    # ========== PCD 保存 ==========
+    pcd_save/pcd_save_en: true
+    pcd_save/colmap_output_en: false
+    pcd_save/filter_size_pcd: 0.15
+    pcd_save/interval: 100
+
+    # ========== Debug ==========
+    debug/plot_time: -10.0
+    debug/frame_cnt: 6

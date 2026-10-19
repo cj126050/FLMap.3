@@ -1,0 +1,227 @@
+#!/bin/bash
+# go2-clock —— Go2 拓展坞时间基准工具（需 root：设置时钟）
+#
+# Orin Nano 载板没有 RTC 电池，断电后时钟回到镜像构建日（实测差 384 天）。
+# 本工具做四件事：
+#   1. 从 PC 的授时服务拉取精确时间：同一进程内 3 次采样取最小 RTT，
+#      并用 clock_settime 直接设钟（不经 fork/exec），实测残差 <1ms
+#   2. 每次校时后把 epoch 落盘；断电重启先恢复到"上次已知时间"再等校准
+#   3. 用 flock 串行化，避免定时器与手动调用并发改钟
+#   4. 用 RTT 阈值识别"采样期间时钟被改"，丢弃被污染的样本
+#
+# 用法（root）:
+#   go2-clock pull         # 向 PC 拉一次时间
+#   go2-clock set <epoch>  # 直接设置
+#   go2-clock save         # 保存当前时间到状态文件
+#   go2-clock restore      # 从状态文件恢复
+#   go2-clock status       # 显示状态
+#
+# 环境变量: GO2_TIME_SERVER=192.168.123.10:8000  GO2_STEP_THRESHOLD=0.01  GO2_MAX_RTT_MS=250
+
+set -u
+# 允许通过 /etc/default/go2-clock 覆盖，例如：GO2_TIME_SERVER=192.168.123.10:8000
+[ -f /etc/default/go2-clock ] && . /etc/default/go2-clock
+SERVER="${GO2_TIME_SERVER:-192.168.123.10:8000}"
+STATE_DIR="/var/lib/go2-clock"
+STATE="$STATE_DIR/state"
+LOG_TAG="go2-clock"
+STEP_THRESHOLD="${GO2_STEP_THRESHOLD:-0.010}"
+MAX_RTT_MS="${GO2_MAX_RTT_MS:-250}"
+
+log() { echo "[$LOG_TAG] $*"; }
+need_root() { [ "$(id -u)" = "0" ] || { log "需要 root 权限"; exit 1; }; }
+now_epoch() { date +%s.%N; }
+is_root() { [ "$(id -u)" = "0" ] && echo 1 || echo 0; }
+
+# ---------------------------------------------------------------- 拉取并校时
+# python 路径：三次采样取最小 RTT，clock_settime 直接设钟
+pull_py() {
+  python3 - "$SERVER" "$STEP_THRESHOLD" "$MAX_RTT_MS" "$(is_root)" <<'PY'
+import ctypes, sys, time, urllib.request
+
+server, thresh, max_rtt_ms, root = sys.argv[1], float(sys.argv[2]), int(sys.argv[3]), sys.argv[4] == "1"
+url = "http://%s/time" % server
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 绕过代理环境变量
+
+best = None
+for _ in range(3):
+    try:
+        t0 = time.time()
+        with opener.open(url, timeout=2) as r:
+            srv = float(r.read().decode().strip())
+        t1 = time.time()
+    except Exception:
+        continue
+    rtt = t1 - t0
+    if best is None or rtt < best[0]:
+        best = (rtt, t1, srv)
+
+if best is None:
+    sys.exit(1)
+
+rtt, t_recv, srv = best
+if rtt * 1000 > max_rtt_ms:
+    print("[go2-clock] RTT=%.0fms 超过 %dms，判定采样期间时钟跳变，丢弃" % (rtt * 1000, max_rtt_ms))
+    sys.exit(2)
+
+true_now = srv + rtt / 2.0          # 补偿单程延迟
+local_now = time.time()
+offset = local_now - true_now
+print("[go2-clock] PC=%.6f  本地=%.6f  偏差=%+.6fs  RTT=%.1fms"
+      % (true_now, local_now, offset, rtt * 1000))
+
+if abs(offset) <= thresh:
+    print("[go2-clock] 偏差在 %.3fs 以内，跳过（保持单调，避免 rosbag 时间倒流）" % thresh)
+    sys.exit(0)
+
+if not root:
+    print("[go2-clock] 需要 root 才能改时钟")
+    sys.exit(3)
+
+CLOCK_REALTIME = 0
+
+class Timespec(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+libc = ctypes.CDLL("libc.so.6", use_errno=True)
+libc.clock_settime.argtypes = [ctypes.c_int, ctypes.POINTER(Timespec)]
+
+target = srv + rtt / 2.0            # 用锁定的目标值，不再重新取 time.time()
+ts = Timespec(int(target), int(round((target % 1) * 1e9)))
+if ts.tv_nsec >= 1000000000:
+    ts.tv_sec += 1
+    ts.tv_nsec -= 1000000000
+if libc.clock_settime(CLOCK_REALTIME, ctypes.byref(ts)) != 0:
+    print("[go2-clock] clock_settime 失败: %s" % ctypes.get_errno())
+    sys.exit(3)
+
+resid = time.time() - target
+print("[go2-clock] 已校时：%s  残差 %+.3fms（原偏差 %+.3fs）"
+      % (time.strftime("%Y-%m-%d %H:%M:%S"), resid * 1000, offset))
+sys.exit(0)
+PY
+}
+
+# 无 python3 时的退路（精度 10ms 量级）
+pull_curl() {
+  local t0 t1 body rtt half new cur diff rtt_ms
+  t0=$(date +%s%N)
+  body=$(curl -s --noproxy '*' -m 2 "http://$SERVER/time" 2>/dev/null) || { log "拉取失败：PC 授时服务不可达 ($SERVER)"; return 1; }
+  t1=$(date +%s%N)
+  case "$body" in ''|*[!0-9.]*) return 1 ;; esac
+  case "$t0$t1" in ''|*[!0-9]*) return 1 ;; esac
+  rtt=$(( t1 - t0 )); half=$(( rtt / 2 )); rtt_ms=$(( rtt / 1000000 ))
+  if [ "$rtt_ms" -gt "$MAX_RTT_MS" ]; then
+    log "RTT=${rtt_ms}ms 超过 ${MAX_RTT_MS}ms，判定采样期间时钟跳变，丢弃"
+    return 2
+  fi
+  new=$(awk -v s="$body" -v h="$half" 'BEGIN{printf "%.9f", s + h/1000000000}')
+  cur=$(now_epoch)
+  diff=$(awk -v a="$cur" -v b="$new" 'BEGIN{d=a-b; if(d<0)d=-d; printf "%.6f", d}')
+  log "PC=$new  本地=$cur  偏差=${diff}s  RTT=${rtt_ms}ms"
+  if awk -v d="$diff" -v t="$STEP_THRESHOLD" 'BEGIN{exit !(d<=t)}'; then
+    log "偏差在 ${STEP_THRESHOLD}s 以内，跳过"
+    return 0
+  fi
+  need_root
+  date -s "@$new" >/dev/null 2>&1 && { log "已校时：$(date '+%F %T %Z')"; return 0; }
+  log "设置系统时间失败"; return 3
+}
+
+do_pull() {
+  if command -v python3 >/dev/null 2>&1; then
+    pull_py; return $?
+  fi
+  pull_curl; return $?
+}
+
+# ---------------------------------------------------------------- 状态持久化
+do_save() {
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  { date +%s; date '+%F %T'; } > "$STATE.tmp" 2>/dev/null && mv -f "$STATE.tmp" "$STATE" 2>/dev/null
+  return 0
+}
+
+do_restore() {
+  need_root
+  [ -f "$STATE" ] || { log "无状态文件，跳过恢复"; return 1; }
+  local e cur
+  e=$(head -1 "$STATE" 2>/dev/null)
+  case "$e" in ''|*[!0-9]*) log "状态文件损坏"; return 1 ;; esac
+  cur=$(date +%s)
+  if [ "$e" -gt "$cur" ]; then
+    date -s "@$e" >/dev/null 2>&1 && \
+      log "已恢复到上次已知时间：$(date '+%F %T')（落后 $(( e - cur ))s，等待向 PC 校准）"
+  else
+    log "当前时间不落后于状态文件，跳过恢复"
+  fi
+  return 0
+}
+
+do_set() {
+  local e="${1:-}"
+  [ -n "$e" ] || { log "用法: go2-clock set <epoch>"; return 1; }
+  need_root
+  date -s "@$e" >/dev/null 2>&1 || { log "设置失败"; return 1; }
+  log "已设置：$(date '+%F %T %Z')"
+  do_save
+}
+
+do_status() {
+  echo "系统时间 : $(date '+%F %T %Z')  (epoch $(date +%s))"
+  echo "UTC      : $(date -u '+%F %T')"
+  echo "RTC      : $( (hwclock -r 2>/dev/null || hwclock -r -f /dev/rtc0 2>/dev/null) || echo '读取失败（无电池，属正常）')"
+  echo "NTP 服务 : timesyncd=$(systemctl is-active systemd-timesyncd 2>/dev/null || echo '-')  go2-clock-pull.timer=$(systemctl is-active go2-clock-pull.timer 2>/dev/null || echo '-')"
+  echo "状态文件 : $([ -f "$STATE" ] && echo "$(head -1 "$STATE")  ($(sed -n 2p "$STATE"))" || echo '不存在')"
+  local out
+  out=$(python3 - "$SERVER" <<'PY' 2>/dev/null
+import sys, time, urllib.request
+server = sys.argv[1]
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+best = None
+for _ in range(3):
+    try:
+        t0 = time.time()
+        with opener.open("http://%s/time" % server, timeout=2) as r:
+            srv = float(r.read().decode().strip())
+        t1 = time.time()
+    except Exception:
+        continue
+    rtt = t1 - t0
+    # 偏差必须在采样当刻算，不能等循环结束再取 time.time()
+    if best is None or rtt < best[0]:
+        best = (rtt, srv + rtt / 2.0, t1 - (srv + rtt / 2.0))
+if best is None:
+    sys.exit(1)
+rtt, true_now, off = best
+print("可达  PC=%.6f  RTT=%.1fms  偏差=%+.4fs" % (true_now, rtt * 1000, off))
+PY
+) || { echo "PC 授时  : 不可达 ($SERVER)"; return 0; }
+  echo "PC 授时  : $out"
+}
+
+# ---------------------------------------------------------------- 入口
+LOCK_FILE=/run/lock/go2-clock.lock
+
+case "${1:-status}" in
+  pull)
+    # 串行化：systemd 定时器与手动调用可能并发，两个进程同时改钟会互相污染采样
+    if [ -d /run/lock ]; then
+      exec 9>"$LOCK_FILE" 2>/dev/null || true
+      flock -w 10 9 2>/dev/null || true
+    fi
+    do_pull
+    rc=$?
+    if [ "$rc" = "2" ]; then
+      sleep 0.3
+      do_pull || true
+    fi
+    [ "$rc" = "0" ] && do_save
+    exit 0
+    ;;
+  set)     do_set "${2:-}" ;;
+  save)    do_save ;;
+  restore) do_restore || true ;;
+  status)  do_status ;;
+  *) echo "用法: go2-clock {pull|set <epoch>|save|restore|status}"; exit 1 ;;
+esac

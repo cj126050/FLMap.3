@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>flmap_bridge</name>
+  <version>0.1.0</version>
+  <description>
+    Edge-side point cloud reduction bridge. Downsample + repack + rate-limit FAST-LIO2's
+    full-resolution registered cloud so it can be streamed over Wi-Fi to a remote RViz.
+  </description>
+  <maintainer email="cj126050@users.noreply.github.com">FLMap.2 contributors</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

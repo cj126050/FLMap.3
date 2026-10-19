@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  cyclonedds_unicast.xml.example —— 关掉多播、改用单播点对点发现的 DDS 配置
+
+  什么时候需要它
+  --------------
+  默认情况下 CycloneDDS 用多播做节点发现。这在有线局域网里没问题，但在 Wi-Fi 上：
+    * 很多家用/商用 AP 对多播限速或直接丢弃（"多播转单播"未开启）
+    * 部分 AP 开了「客户端隔离」，机器之间完全看不见
+  表现就是：两边都起了节点，ros2 topic list 却是空的，或者要等几十秒才互相发现。
+
+  用法
+  ----
+  1. 把本文件复制成两份，分别填上「对端」的 IP：
+       config/dds_edge.xml   ← Peer 填 PC 的 IP      （放在狗上）
+       config/dds_pc.xml     ← Peer 填狗的 IP        （放在 PC 上）
+  2. 两边启动前设置环境变量：
+       export CYCLONEDDS_URI=file:///绝对路径/dds_edge.xml      # 狗
+       export CYCLONEDDS_URI=file:///绝对路径/dds_pc.xml        # PC
+  3. 验证：scripts/link_probe.sh 的第 4 节应该能看到对端节点。
+
+  注意
+  ----
+  * 这里故意不写 <Domain Id="42">，只写 <Domain>，这样对所有 domain 生效。
+    （Foxy 自带的 CycloneDDS 0.7 不支持按 Id 区分 domain 的写法。）
+  * NetworkInterface 的 name 必须换成你实际在用的网卡名（ip -br addr 查）。
+  * 一旦 Peer 列表写错，发现会**静默失败** —— 症状和"完全没连上"一样。
+    所以先用默认配置（不设 CYCLONEDDS_URI）确认能通，再切这份配置做优化。
+-->
+<CycloneDDS>
+  <Domain>
+    <General>
+      <Interfaces>
+        <!-- 换成实际网卡名：狗上一般是 wlan0，PC 上一般是 wlp*/wlan0 -->
+        <NetworkInterface name="wlan0" priority="default" multicast="false"/>
+      </Interfaces>
+      <!-- 关掉多播发现，只走下面 Peers 里的单播 -->
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
+      <Peers>
+        <!-- ★ 填对端 IP（不是本机 IP）★ -->
+        <Peer address="192.168.1.100"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

@@ -1,0 +1,59 @@
+# flmap_bridge —— 边缘侧点云瘦身参数（FLMap.3 有线版）
+#
+# FLMap.2 走 Wi-Fi，把 /cloud_registered（约 9.6 MB/s）压到 1.3 Mbit/s。
+# FLMap.3 走千兆有线，可用带宽约 940 Mbit/s —— 没有理由再压那么狠。
+#
+# 这组参数的取舍：**保真度优先，带宽只用到千兆的 2%**。
+#   voxel 0.10 m + 10 Hz  →  约 10000 点/帧 × 16 B × 10 Hz ≈ 13 Mbit/s
+#   对比 FLMap.2 的 0.20 m + 5 Hz ≈ 1.3 Mbit/s（差 10 倍保真度，仍然只占 1.4%）
+#
+# 想退回省带宽模式：voxel_leaf=0.20, max_rate_hz=5.0（就是 FLMap.2 的原值）。
+#
+# 注意：参数名必须和节点名完全一致（/flmap_bridge），否则 ROS 2 会静默不生效。
+
+/flmap_bridge:
+  ros__parameters:
+    # ---- 输入 / 输出 ----
+    input_topic: "/cloud_registered"      # FAST-LIO2 全分辨率配准点云（PointXYZINormal, 48 B/点）
+    output_topic: "/flmap/cloud"          # 瘦身后发给 PC 的流（x,y,z,intensity, 16 B/点）
+
+    # ---- 降采样 ----
+    # 0.10 m 在有线上是安全的：墙面细节、家具边缘都保得住。
+    # 想更细腻 -> 0.05（流量 +300%，仍只有 40 Mbit/s）；想省 -> 0.20（回到 FLMap.2 观感）
+    voxel_leaf: 0.10
+
+    # 单帧点数硬上限。有线场景可以放宽到 6 万，开阔场地也不至于打满链路。
+    # 触顶时日志会打 [hit max_points cap]。
+    max_points: 60000
+
+    # ---- 限流 ----
+    # 10 Hz = 与 FAST-LIO2 输出同频，画面连续、没有跳帧感。
+    # 链路异常时降到 5 Hz，观感依然可接受。
+    max_rate_hz: 10.0
+
+    # 允许比目标周期早 15% 发布。
+    # 输入帧间隔本来就不均匀（实测 0.05~0.36 s），严格按"间隔 >= 周期"判定会把
+    # 大量帧丢掉 —— 目标 5 Hz 时实测只有 2.9 Hz。加容差后输出贴着目标频率走。
+    # 一般不用改；设为 1.0 即恢复严格的固定间隔限流。
+    rate_tolerance: 0.85
+
+    # ---- 范围裁剪（单位 m，相对雷达）----
+    # 太近的点是狗自身/云台遮挡，太远的点对室内建图没意义且最耗带宽。
+    range_min: 0.5
+    range_max: 40.0
+
+    # 保留 intensity（FAST-LIO2 的 reflectivity）。关掉可以再省 25% 带宽，
+    # 但 RViz 就只能按高度/单色着色。
+    keep_intensity: true
+
+    # 每隔多少帧打一行统计（帧数，不是秒）。0 = 关闭。
+    stats_period: 60
+
+    # ---- QoS ----
+    # ⚠️ 必须两两成对匹配。实测 CycloneDDS：发布 RELIABLE + 订阅 BEST_EFFORT
+    # 不是"降级"，而是**完全收不到数据**。
+    # FAST-LIO2 的 /cloud_registered 默认 RELIABLE，所以输入侧必须 reliable；
+    # 输出侧也用 reliable，才能被 RViz 的默认设置直接订阅到。
+    # 链路极差时可以两边一起改 best_effort（RViz 显示项的 Reliability Policy 也要跟着改）。
+    input_reliability: "reliable"
+    output_reliability: "reliable"

@@ -1,6 +1,8 @@
-# 05 · 带宽调优
+# 05 · 带宽与保真度调优
 
-> 画面卡、掉帧、延迟大 —— 先看完这份再改参数，能省掉一半试错。
+> 千兆有线把"带宽"这一项从瓶颈变成了常量：默认参数只占链路的 1.2%。
+> 所以这份文档的重点不是"怎么省带宽"，而是**"余量这么多，该把保真度花在哪"**
+> 以及"画面卡但带宽还空着"时该查什么。
 
 ---
 
@@ -11,135 +13,146 @@
 链路带宽   = 单帧字节数 × 频率 × 8        （bit/s）
 ```
 
-Mid360 在 `point_filter_num=1` 时约 **20 000 点/帧 @10 Hz**。默认参数下：
+Mid360 在 `point_filter_num=1` 时约 **16 000–20 000 点/帧 @10 Hz**。实测（室内办公室）：
 
 | 环节 | 点数 | 字节/点 | 频率 | 带宽 |
 |---|---|---|---|---|
-| FAST-LIO2 输出 `/cloud_registered` | 20 000 | 48 | 10 Hz | 76.8 Mbit/s |
-| 桥接默认（0.20 m / 5 Hz / 保留 intensity） | 2 061 | 16 | 5 Hz | **1.32 Mbit/s** |
-| 弱网预设（0.30 m / 3 Hz / 丢 intensity） | ~1 100 | 12 | 3 Hz | **~0.32 Mbit/s** |
-| 高清预设（0.10 m / 8 Hz / 保留 intensity） | ~5 000 | 16 | 8 Hz | **~5.1 Mbit/s** |
+| FAST-LIO2 输出 `/cloud_registered` | ~16 000 | 48 | 10 Hz | **~61 Mbit/s** |
+| 桥接输出 `/flmap/cloud`（`voxel_leaf=0.10`） | **9 075** | 16 | 10 Hz | **11.6 Mbit/s** |
+| 千兆链路可用 | — | — | — | 1000 Mbit/s |
 
-> 点数是实测值：`tools/fake_cloud.py` 造 8×8×3 m 房间 20 000 点，
-> 0.20 m 体素后剩 2 061 点（10.3%）。真实室内场景在 6%–20% 区间，
-> 空旷大厅（点更分散）降得更多，走廊（墙面集中）降得更少。
+- 桥接保留率 **56.6%**（`in 15921 -> out 8982`），比 FLMap.2 的 ~15% 高一个量级，
+  因为体素从 `0.20 m` 收到了 `0.10 m`；
+- 11.6 Mbit/s 相对千兆是 **1.2%**，链路抖动实测 **0.082 ms**；
+- 注意 `PointXYZINormal` 是 **48 B/点**（x,y,z,pad + normal[3],curvature + intensity,pad），
+  重打包成 `x,y,z,intensity` 的 **16 B/点** 本身就是 3 倍压缩，比降采样更"无损"。
 
-**关键结论**：默认参数只占 1.3 Mbit/s，5 GHz Wi-Fi 的单流可用吞吐通常有 30–80 Mbit/s，
-余量 20 倍以上。**如果你的画面在卡，八成不是带宽不够，而是别的原因**（见第 5 节）。
+**关键结论**：带宽不是这套方案的约束。真正会先撞墙的是 **RViz 渲染** 和
+**累加器的内存**（见第 5 节）。
 
 ---
 
-## 2. 五个旋钮，按这个顺序调
+## 2. 五个旋钮
 
-参数都在 `src/flmap_bridge/config/bridge_default.yaml`，也可以用 launch 覆盖：
+参数在 `src/flmap_bridge/config/bridge_default.yaml`，也可以用 launch 覆盖：
 
 ```bash
 ros2 launch flmap_bringup edge_mapping.launch.py \
-    voxel_leaf:=0.30 max_rate_hz:=3.0 keep_intensity:=false
+    voxel_leaf:=0.05 max_rate_hz:=10.0 keep_intensity:=true
 ```
 
-| 顺序 | 参数 | 效果 | 代价 |
-|---|---|---|---|
-| 1 | `voxel_leaf` 0.20 → 0.30 | 点数 −35% | 墙面开始发糊，细节丢失 |
-| 2 | `max_rate_hz` 5 → 3 | 带宽 −40% | 画面一顿一顿，但还能看 |
-| 3 | `keep_intensity` true → false | 带宽 −25% | 失去反射率着色，只能按高度看 |
-| 4 | `range_max` 40 → 20 | 点数明显减少 | 远处结构直接消失 |
-| 5 | `max_points` 20000 → 8000 | 硬上限 | 开阔场景点云变稀，室内几乎无感 |
+| 参数 | 默认（有线） | 调大 / 调细的代价 |
+|---|---|---|
+| `voxel_leaf` | **0.10 m** | 调细（0.05）→ 点数翻倍，墙面细节更好，狗端 CPU 与带宽上升；调粗（0.20）→ 省资源但墙会发糊 |
+| `max_rate_hz` | **10.0 Hz** | 跟雷达同频，再高没有意义（上游就是 10 Hz）；调低只省带宽，画面会"一帧一帧蹦" |
+| `keep_intensity` | `true` | 关掉省 25% 带宽，但 RViz 只能按高度着色，看不出材质差异 |
+| `range_max` | `40.0 m` | 室内可降到 20 m，远处噪点直接消失，点云更干净 |
+| `max_points` | **60 000** | 单帧点数硬上限，室内正常场景撞不到；撞到了日志会打 `hit max_points cap` |
 
-**为什么不先降频率？** 因为观感损失最直接 —— 3 Hz 的点云在 RViz 里是"一帧一帧蹦"。
-降体素只是让墙糊一点，人眼更容易接受。
+**有线下的推荐动作**：先什么都不用调。0.10 m / 10 Hz 已经能跑满雷达帧率，
+再细对肉眼几乎没有收益，反而让累加器内存涨得更快。
 
 ---
 
 ## 3. 三个预设
 
-### 默认（推荐起点）
-
-```yaml
-voxel_leaf: 0.20
-max_rate_hz: 5.0
-keep_intensity: true
-max_points: 20000
-```
-
-### 弱网（2.4 GHz / 隔着墙 / 多设备干扰）
-
-```yaml
-voxel_leaf: 0.30
-max_rate_hz: 3.0
-keep_intensity: false        # 同时把两侧 QoS 改成 best_effort，见 02 文档
-max_points: 8000
-range_max: 20.0
-```
-
-### 高清（5 GHz 近距离，要演示细节）
+### 默认（有线，推荐）
 
 ```yaml
 voxel_leaf: 0.10
-max_rate_hz: 8.0
+max_rate_hz: 10.0
 keep_intensity: true
-max_points: 40000
+max_points: 60000
+range_max: 40.0
 ```
 
-> 高清预设约 5 Mbit/s，仍在安全区内。再往上（0.05 m / 10 Hz）就接近 20 Mbit/s，
-> 链路一旦抖动就会连环重传 —— 除非你在做静态展示，否则不建议。
+实测 9 075 点/帧、11.6 Mbit/s。
+
+### 省资源（PC 较弱 / 长时间跑 / 只想看轮廓）
+
+```yaml
+voxel_leaf: 0.15
+max_rate_hz: 10.0
+keep_intensity: true     # 建议保留，着色信息比点密度更影响"能看懂"
+max_points: 40000
+range_max: 25.0
+```
+
+约 4 000 点/帧、5 Mbit/s，累加器内存增长减半。
+
+### 高保真（静态展示 / 精细建模参考）
+
+```yaml
+voxel_leaf: 0.05
+max_rate_hz: 10.0
+keep_intensity: true
+max_points: 120000
+range_max: 40.0
+```
+
+约 20 000 点/帧、26 Mbit/s —— 仍然只占千兆的 2.6%，代价主要在狗端 CPU 和
+PC 端累加器内存。
+
+> 就算把 `voxel_leaf` 设成 0（关掉降采样）、10 Hz 全量 16 B/点，
+> 也只有 16 000 × 16 × 10 × 8 ≈ **20 Mbit/s**。这就是"有线"带来的自由度：
+> 你可以只在需要的时候才考虑带宽。
 
 ---
 
 ## 4. 怎么验证调参效果
 
-自带的量测工具：
-
 ```bash
-# 狗端：看桥接自己的统计（每 stats_period 帧打一行）
+# 狗端：桥接自己的统计（每 stats_period 帧一行）
 grep "in .* pts" /tmp/flmap_edge/bridge.log | tail -3
-# 例：
-# in 20000 pts -> out 2061 pts (10.3%), ~33 kB/msg, ~1.3 Mbit/s @5.0 Hz
+# 实测输出：
+# in 15921 pts -> out 8982 pts (56.4%), ~144 kB/msg, ~11.5 Mbit/s @10.0 Hz
 
 # PC 端：量实际收到的
-python3 tools/bench_bridge.py --topic /flmap/cloud --seconds 8
-# 例：
-# topic=/flmap/cloud  frames=40  rate=5.0 Hz
-# points/frame avg=2061  max=2061
-# payload 165 kB/s  ->  1.3 Mbit/s
+python3 tools/bench_bridge.py --topic /flmap/cloud --seconds 10
+# 实测输出：
+# topic=/flmap/cloud  frames=100  rate=10.0 Hz
+# points/frame avg=9075  max=9319
+# payload 1452 kB/s  ->  11.6 Mbit/s
 ```
 
 判据：
 
 | 指标 | 健康 | 说明 |
 |---|---|---|
-| `rate` 接近 `max_rate_hz` | 4.5–5.0 / 5.0 | 明显低于目标说明在丢帧 |
-| `points/frame` 稳定 | 波动 < 10% | 忽大忽小说明 input 端不稳 |
+| `rate` 接近 `max_rate_hz` | 9.5–10.2 / 10.0 | 明显低于目标说明在丢帧或上游卡了 |
+| `points/frame` 稳定 | 波动 < 10% | 忽大忽小说明场景在变或上游不稳 |
 | 桥接日志 `hit max_points cap` | 不出现 | 出现说明体素太细或场景太大 |
-
-**PC 端的 rate 比狗端低 = 链路丢帧；两端一样低 = 狗端没发出来**（或输入帧率就低）。
+| 两端 `rate` 一致 | 差值 < 3% | **PC 端低 = 链路丢帧；两端一样低 = 狗端没发出来** |
 
 ---
 
-## 5. 画面卡但带宽没超？看这四个
+## 5. 画面卡但带宽只用了 1%？查这五条
 
-1. **Wi-Fi 省电模式**（最常见）
+1. **RViz 渲染跟不上**（有线场景下最常见）
 
-   ```bash
-   iw dev wlan0 get power_save        # 狗端
-   sudo iw dev wlan0 set power_save off
-   ```
+   累积地图到 150 万点以后，RViz 每次刷新都要重传整份顶点，CPU 单核吃满。
+   处置：显示项的点大小 2 px → 1 px；`publish_rate` 1.0 → 0.5；
+   或干脆用 `tools/render_cloud.py` 离屏渲染。
 
-   省电模式下 RTT 会从 3 ms 跳到 100+ ms，表现为"卡 2 秒、蹦一下"。
+2. **累加器内存涨太快**
 
-2. **RViz 渲染跟不上**（不是网络问题）
+   `voxel_leaf=0.15`、50 秒到 157 万点 / 25.6 MB 是正常的；但如果 PC 内存小于 8 GB，
+   把 `voxel_leaf` 调到 0.20，或调低 `max_points` 触发更频繁的全局去重。
 
-   PC 端 CPU 占用高、RViz 帧率低 → 把地图显示项的点大小从 2 px 调到 1 px，
-   或 `publish_rate` 从 1.0 降到 0.5。积到 200 万点的地图，RViz 每次刷新都要重传整份顶点。
-
-3. **DDS 重传堆积**（链路丢包多但还没断）
-
-   `link_probe.sh` 看抖动，mdev > 20 ms 就会这样。
-
-4. **狗端 CPU 打满**（LIO 抢不到核）
+3. **狗端 CPU 打满**（LIO 抢不到核）
 
    `edge_control.sh status` 看负载；`top` 看 `fastlio2_mapping` 是否 >100%。
-   确认 `taskset -c 0-3` 生效，并把 `nvpmodel -m 0 && jetson_clocks` 跑过。
+   确认 `taskset -c 0-3` 生效，并跑过 `nvpmodel -m 0 && jetson_clocks`。
+
+4. **DDS 重传堆积**（物理层有问题但还没断）
+
+   `link_probe.sh` 看丢包与抖动：有线正常是 **0% / 0.08 ms**，
+   一旦出现丢包，先查网线、水晶头、交换机端口，而不是调参数。
+
+5. **PC 网卡选错 / 走错出口**
+
+   多网卡机器上 CycloneDDS 可能绑到 Wi-Fi。`link_probe.sh` 第 1 节会打印
+   "到 192.168.123.18 走: enp131s0"，以及协商速率是否为 1000 Mbit/s。
 
 ---
 
